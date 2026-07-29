@@ -1,27 +1,38 @@
 // fetchNews.js
-// Ye script sources.js me di gayi saari RSS feeds se latest articles
-// fetch karta hai aur ek JSON file (data/raw-news.json) me save karta hai.
-// Isse hum baad me AI se rewrite/expand karenge.
-
 const Parser = require("rss-parser");
 const fs = require("fs");
 const path = require("path");
 const sources = require("./sources");
 
-const parser = new Parser({
-  timeout: 10000, // 10 second timeout per feed, taaki ek slow feed pura script na roke
-});
+const parser = new Parser({ timeout: 10000 });
+const ARTICLES_PER_SOURCE = 5;
 
-const ARTICLES_PER_SOURCE = 5; // har source se kitni latest headlines leni hain
+const CONFIG_PATH = path.join(__dirname, "config.json");
+function loadConfig() {
+  if (!fs.existsSync(CONFIG_PATH)) return { articlesPerCategory: 1 };
+  return JSON.parse(fs.readFileSync(CONFIG_PATH, "utf-8"));
+}
+
+function limitPerCategory(articles, limit) {
+  const byCategory = {};
+  for (const article of articles) {
+    if (!byCategory[article.category]) byCategory[article.category] = [];
+    byCategory[article.category].push(article);
+  }
+  const result = [];
+  for (const category of Object.keys(byCategory)) {
+    const sorted = byCategory[category].sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+    result.push(...sorted.slice(0, limit));
+  }
+  return result;
+}
 
 async function fetchAllFeeds() {
   const allArticles = [];
-
   for (const source of sources) {
     try {
       console.log(`Fetching: ${source.name} (${source.category})...`);
       const feed = await parser.parseURL(source.url);
-
       const items = feed.items.slice(0, ARTICLES_PER_SOURCE).map((item) => ({
         title: item.title || "",
         link: item.link || "",
@@ -31,33 +42,29 @@ async function fetchAllFeeds() {
         category: source.category,
         fetchedAt: new Date().toISOString(),
       }));
-
       allArticles.push(...items);
       console.log(`  -> ${items.length} articles fetched.`);
     } catch (err) {
-      // Agar ek feed fail ho (down ho, ya URL change ho gaya ho), to poora
-      // script crash nahi hoga — bas error log hoga aur agli feed try hogi.
       console.error(`  -> FAILED: ${source.name}: ${err.message}`);
     }
   }
-
   return allArticles;
 }
 
 async function main() {
   const dataDir = path.join(__dirname, "data");
-  if (!fs.existsSync(dataDir)) {
-    fs.mkdirSync(dataDir, { recursive: true });
-  }
+  if (!fs.existsSync(dataDir)) fs.mkdirSync(dataDir, { recursive: true });
 
-  const articles = await fetchAllFeeds();
+  const allArticles = await fetchAllFeeds();
+  const config = loadConfig();
+  const articles = limitPerCategory(allArticles, config.articlesPerCategory);
 
   const outputPath = path.join(dataDir, "raw-news.json");
   fs.writeFileSync(outputPath, JSON.stringify(articles, null, 2), "utf-8");
 
-  console.log(`\nTotal articles fetched: ${articles.length}`);
+  console.log(`\nTotal fetched (before limit): ${allArticles.length}`);
+  console.log(`Kept after per-category limit (${config.articlesPerCategory}/category): ${articles.length}`);
   console.log(`Saved to: ${outputPath}`);
 }
 
 main();
-
