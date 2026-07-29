@@ -7,7 +7,7 @@ const SITE_TAGLINE = "Signal over noise.";
 const SITE_URL = "https://example.com";
 
 const DATA_PATH = path.join(__dirname, "data", "articles.json");
-const OUTPUT_DIR = path.join(__dirname, "site");
+const OUTPUT_DIR = path.join(__dirname, "docs");
 
 function slugify(str) {
   return str.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 80);
