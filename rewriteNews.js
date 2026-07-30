@@ -1,6 +1,8 @@
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
+const axios = require("axios");
+const Jimp = require("jimp");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
 const { createClient } = require("@supabase/supabase-js");
 
@@ -17,6 +19,40 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 
 function slugify(str) {
   return str.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 80);
+}
+
+async function processAndUploadImage(imageUrl, slug) {
+  if (!imageUrl) return null;
+
+  try {
+    const response = await axios.get(imageUrl, {
+      responseType: "arraybuffer",
+      timeout: 10000,
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
+
+    const image = await Jimp.read(Buffer.from(response.data));
+    image.flip(true, false);
+    image.resize(1200, Jimp.AUTO);
+
+    const buffer = await image.getBufferAsync(Jimp.MIME_JPEG);
+
+    const fileName = `${slug}-${Date.now()}.jpg`;
+    const { error: uploadError } = await supabase.storage
+      .from("post-images")
+      .upload(fileName, buffer, { contentType: "image/jpeg" });
+
+    if (uploadError) {
+      console.error(`  -> Image upload FAILED: ${uploadError.message}`);
+      return null;
+    }
+
+    const { data: urlData } = supabase.storage.from("post-images").getPublicUrl(fileName);
+    return urlData.publicUrl;
+  } catch (err) {
+    console.error(`  -> Image processing FAILED: ${err.message.slice(0, 100)}`);
+    return null;
+  }
 }
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
@@ -69,6 +105,7 @@ async function rewriteArticle(article, index, total, retryCount = 0) {
     parsed.originalTitle = article.title;
     parsed.pubDate = article.pubDate;
     parsed.generatedAt = new Date().toISOString();
+    parsed.imageUrl = article.imageUrl || null;
 
     return parsed;
   } catch (err) {
@@ -93,21 +130,27 @@ async function saveToSupabase(articles) {
   for (const a of articles) {
     const slug = slugify(a.title);
 
-    const { error } = await supabase.from("posts").upsert(
-      {
-        title: a.title,
-        slug,
-        category: a.category,
-        body: a.body,
-        meta_description: a.metaDescription,
-        source_name: a.sourceName,
-        source_link: a.sourceLink,
-        pub_date: a.pubDate,
-        is_manual: false,
-        status: "published",
-      },
-      { onConflict: "slug" }
-    );
+    let imageUrl = null;
+    if (a.imageUrl) {
+      console.log(`  -> Processing image for "${a.title.slice(0, 40)}..."`);
+      imageUrl = await processAndUploadImage(a.imageUrl, slug);
+    }
+
+    const payload = {
+      title: a.title,
+      slug,
+      category: a.category,
+      body: a.body,
+      meta_description: a.metaDescription,
+      source_name: a.sourceName,
+      source_link: a.sourceLink,
+      pub_date: a.pubDate,
+      is_manual: false,
+      status: "published",
+    };
+    if (imageUrl) payload.image_url = imageUrl;
+
+    const { error } = await supabase.from("posts").upsert(payload, { onConflict: "slug" });
 
     if (error) {
       console.error(`  -> Supabase insert FAILED for "${a.title.slice(0, 40)}...": ${error.message}`);

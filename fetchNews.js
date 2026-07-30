@@ -4,7 +4,30 @@ const fs = require("fs");
 const path = require("path");
 const sources = require("./sources");
 
-const parser = new Parser({ timeout: 10000 });
+const parser = new Parser({
+  timeout: 10000,
+  customFields: {
+    item: [
+      ["media:content", "mediaContent", { keepArray: true }],
+      ["media:thumbnail", "mediaThumbnail"],
+    ],
+  },
+});
+
+function extractImageUrl(item) {
+  if (item.enclosure && item.enclosure.url) return item.enclosure.url;
+  if (item.mediaContent && item.mediaContent[0] && item.mediaContent[0].$ && item.mediaContent[0].$.url) {
+    return item.mediaContent[0].$.url;
+  }
+  if (item.mediaThumbnail && item.mediaThumbnail.$ && item.mediaThumbnail.$.url) {
+    return item.mediaThumbnail.$.url;
+  }
+  const html = item.content || item["content:encoded"] || "";
+  const match = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+  if (match) return match[1];
+  return null;
+}
+
 const ARTICLES_PER_SOURCE = 5;
 
 const CONFIG_PATH = path.join(__dirname, "config.json");
@@ -38,6 +61,7 @@ async function fetchAllFeeds() {
         link: item.link || "",
         pubDate: item.pubDate || new Date().toISOString(),
         contentSnippet: item.contentSnippet || item.content || "",
+        imageUrl: extractImageUrl(item),
         source: source.name,
         category: source.category,
         fetchedAt: new Date().toISOString(),
