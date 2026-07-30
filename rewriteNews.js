@@ -1,21 +1,25 @@
-// rewriteNews.js
-// Ye script data/raw-news.json padhta hai, har article ko Gemini API se
-// rewrite/expand karata hai (unique content + SEO title + meta description),
-// aur result ko data/articles.json me save karta hai.
-
 require("dotenv").config();
 const fs = require("fs");
 const path = require("path");
 const { GoogleGenerativeAI } = require("@google/generative-ai");
+const { createClient } = require("@supabase/supabase-js");
 
 if (!process.env.GEMINI_API_KEY) {
   console.error("ERROR: GEMINI_API_KEY .env file me nahi mili. Pehle .env set karo.");
   process.exit(1);
 }
+if (!process.env.SUPABASE_URL || !process.env.SUPABASE_SERVICE_KEY) {
+  console.error("ERROR: SUPABASE_URL ya SUPABASE_SERVICE_KEY .env me nahi mili.");
+  process.exit(1);
+}
+
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+
+function slugify(str) {
+  return str.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 80);
+}
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
-// "latest" alias use kar rahe hain taaki Google model version update kare
-// to code break na ho. Free tier me available.
 const model = genAI.getGenerativeModel({ model: "gemini-flash-lite-latest" });
 
 const RAW_PATH = path.join(__dirname, "data", "raw-news.json");
@@ -59,7 +63,6 @@ async function rewriteArticle(article, index, total, retryCount = 0) {
   try {
     const result = await model.generateContent(buildPrompt(article));
     let text = result.response.text().trim();
-
     text = text.replace(/^```json\s*/i, "").replace(/```$/, "").trim();
 
     const parsed = JSON.parse(text);
@@ -84,6 +87,38 @@ async function rewriteArticle(article, index, total, retryCount = 0) {
   }
 }
 
+async function saveToSupabase(articles) {
+  let successCount = 0;
+
+  for (const a of articles) {
+    const slug = slugify(a.title);
+
+    const { error } = await supabase.from("posts").upsert(
+      {
+        title: a.title,
+        slug,
+        category: a.category,
+        body: a.body,
+        meta_description: a.metaDescription,
+        source_name: a.sourceName,
+        source_link: a.sourceLink,
+        pub_date: a.pubDate,
+        is_manual: false,
+        status: "published",
+      },
+      { onConflict: "slug" }
+    );
+
+    if (error) {
+      console.error(`  -> Supabase insert FAILED for "${a.title.slice(0, 40)}...": ${error.message}`);
+    } else {
+      successCount++;
+    }
+  }
+
+  return successCount;
+}
+
 async function main() {
   if (!fs.existsSync(RAW_PATH)) {
     console.error("ERROR: data/raw-news.json nahi mili. Pehle 'node fetchNews.js' chalao.");
@@ -96,13 +131,17 @@ async function main() {
   for (let i = 0; i < rawArticles.length; i++) {
     const result = await rewriteArticle(rawArticles[i], i, rawArticles.length);
     if (result) rewritten.push(result);
-
     await sleep(13000);
   }
 
   fs.writeFileSync(OUTPUT_PATH, JSON.stringify(rewritten, null, 2), "utf-8");
+
+  console.log(`\nSaving ${rewritten.length} articles to Supabase...`);
+  const saved = await saveToSupabase(rewritten);
+
   console.log(`\nDone! ${rewritten.length}/${rawArticles.length} articles rewritten.`);
-  console.log(`Saved to: ${OUTPUT_PATH}`);
+  console.log(`${saved}/${rewritten.length} articles saved to Supabase.`);
+  console.log(`Local backup: ${OUTPUT_PATH}`);
 }
 
 main();

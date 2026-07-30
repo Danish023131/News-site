@@ -1,13 +1,15 @@
 // generateSite.js
 const fs = require("fs");
 const path = require("path");
+require("dotenv").config();
+const { createClient } = require("@supabase/supabase-js");
 
 const SITE_NAME = "Pulse Wire";
 const SITE_TAGLINE = "Signal over noise.";
 const SITE_URL = "https://example.com";
 
-const DATA_PATH = path.join(__dirname, "data", "articles.json");
 const OUTPUT_DIR = path.join(__dirname, "docs");
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_ANON_KEY);
 
 function slugify(str) {
   return str.toLowerCase().replace(/[^a-z0-9\s-]/g, "").trim().replace(/\s+/g, "-").slice(0, 80);
@@ -146,8 +148,12 @@ function articleCardSide(a) {
 }
 
 function articleCardGrid(a) {
+  const thumb = a.imageUrl
+    ? `<img src="${escapeHtml(a.imageUrl)}" alt="" style="width:100%;height:140px;object-fit:cover;border-radius:4px;margin-bottom:10px;">`
+    : "";
   return `
 <div class="card">
+  ${thumb}
   <span class="eyebrow">${escapeHtml(a.category)}</span>
   <a href="/article/${a.slug}.html"><h4>${escapeHtml(a.title)}</h4></a>
   <p>${escapeHtml(a.metaDescription)}</p>
@@ -198,6 +204,12 @@ ${footerHtml()}
 }
 
 function buildArticlePage(a, categories, allArticles) {
+  const imageHtml = a.imageUrl
+    ? `<img src="${escapeHtml(a.imageUrl)}" alt="${escapeHtml(a.title)}" style="width:100%;border-radius:4px;margin-bottom:20px;">`
+    : "";
+  const sourceLine = a.sourceName
+    ? `<div class="source-note">Based on reporting originally published by ${escapeHtml(a.sourceName)}.</div>`
+    : "";
   return `${headHtml(a.title, a.metaDescription)}
 ${headerHtml(categories, allArticles)}
 <main class="article-page">
@@ -205,9 +217,10 @@ ${headerHtml(categories, allArticles)}
   <span class="eyebrow">${escapeHtml(a.category)}</span>
   <h1>${escapeHtml(a.title)}</h1>
   <div class="meta">${escapeHtml(a.sourceName)} \u00b7 ${formatDate(a.pubDate)}</div>
+  ${imageHtml}
   <div class="article-body">${paragraphs(a.body)}</div>
   <div class="ad-slot">Ad space</div>
-  <div class="source-note">Based on reporting originally published by ${escapeHtml(a.sourceName)}.</div>
+  ${sourceLine}
 </main>
 ${footerHtml()}
 </body></html>`;
@@ -222,15 +235,36 @@ ${urls}
 </urlset>`;
 }
 
-function main() {
-  if (!fs.existsSync(DATA_PATH)) {
-    console.error("ERROR: data/articles.json nahi mili. Pehle 'node rewriteNews.js' chalao.");
+async function main() {
+  const { data: rows, error } = await supabase
+    .from("posts")
+    .select("*")
+    .eq("status", "published")
+    .order("pub_date", { ascending: false });
+
+  if (error) {
+    console.error("ERROR: Supabase se posts fetch nahi hue:", error.message);
     process.exit(1);
   }
 
-  const articles = JSON.parse(fs.readFileSync(DATA_PATH, "utf-8"))
+  if (!rows || rows.length === 0) {
+    console.error("ERROR: Database me koi published post nahi mila.");
+    process.exit(1);
+  }
+
+  const articles = rows
     .filter((a) => a && a.title && a.body)
-    .map((a) => ({ ...a, slug: slugify(a.title) }));
+    .map((a) => ({
+      title: a.title,
+      slug: a.slug,
+      category: a.category,
+      body: a.body,
+      metaDescription: a.meta_description || "",
+      imageUrl: a.image_url || "",
+      sourceName: a.source_name || "",
+      sourceLink: a.source_link || "",
+      pubDate: a.pub_date,
+    }));
 
   const categories = [...new Set(articles.map((a) => a.category))];
 
@@ -251,6 +285,15 @@ function main() {
   });
 
   console.log(`Site generated: ${articles.length} articles, ${categories.length} categories.`);
+
+  const adminSrc = path.join(__dirname, "admin-src");
+  const adminDest = path.join(OUTPUT_DIR, "admin");
+  if (fs.existsSync(adminSrc)) {
+    fs.mkdirSync(adminDest, { recursive: true });
+    fs.copyFileSync(path.join(adminSrc, "index.html"), path.join(adminDest, "index.html"));
+    console.log("Admin panel copied to /admin");
+  }
+
   console.log(`Output folder: ${OUTPUT_DIR}`);
 }
 
